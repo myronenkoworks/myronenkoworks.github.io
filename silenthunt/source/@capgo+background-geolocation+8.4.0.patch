@@ -1,0 +1,73 @@
+diff --git a/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocation.java
+index fa92d7e..6df0c03 100644
+--- a/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocation.java
++++ b/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocation.java
+@@ -679,6 +679,11 @@ public class BackgroundGeolocation extends Plugin {
+         obj.put("speed", location.hasSpeed() ? location.getSpeed() : JSONObject.NULL);
+         obj.put("bearing", location.hasBearing() ? location.getBearing() : JSONObject.NULL);
+         obj.put("time", location.getTime());
++        // SilentHunt (O43): which provider produced this fix. The patch that adds
++        // NETWORK_PROVIDER beside GPS_PROVIDER is worth nothing if the next field log cannot
++        // say which of the two the recorded points came from — that is the measurement the
++        // change exists to make, and it is one line.
++        obj.put("provider", location.getProvider() != null ? location.getProvider() : JSONObject.NULL);
+         return obj;
+     }
+ 
+diff --git a/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocationService.java
+index c996286..6d042bf 100644
+--- a/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocationService.java
++++ b/node_modules/@capgo/background-geolocation/android/src/main/java/com/capgo/capacitor_background_geolocation/BackgroundGeolocationService.java
+@@ -197,11 +197,10 @@ public class BackgroundGeolocationService extends Service {
+             if (client == null || locationCallback == null) {
+                 return;
+             }
+-            try {
+-                client.requestLocationUpdates(LocationManager.GPS_PROVIDER, locationIntervalMs(), currentDistanceFilter, locationCallback);
+-            } catch (SecurityException ignore) {
+-                // Permission issues are handled in the start() method
+-            }
++            // SilentHunt (O43): the plugin's own watchdog duplicated the registration call
++            // inline. Going through the method means both providers come back after its
++            // restart, not just the one it knew about.
++            requestLocationUpdates();
+             startWatchdog();
+         };
+         watchdogHandler.postDelayed(restartRunnable, 10000);
+@@ -308,6 +307,19 @@ public class BackgroundGeolocationService extends Service {
+         return currentMinIntervalMs > 0 ? currentMinIntervalMs : 1000L;
+     }
+ 
++    /*
++     * SilentHunt patch (patches/, reapplied by `npm install`). See docs/OPEN_ITEMS.md, O43.
++     *
++     * Upstream asks Android for GPS_PROVIDER and nothing else, and a field log of eight walks
++     * and a three-hour drive says what that costs: the moment the app is not visible, its
++     * only other source is gone too — Chromium suspends navigator.geolocation for a hidden
++     * page — so a pocket, a building or a car is a recording with no input at all.
++     *
++     * Additive on purpose. The GPS registration above is untouched, so a broken second
++     * provider cannot take the working one down with it, and one LocationListener on two
++     * providers is removed by the single removeUpdates(locationCallback) the plugin already
++     * calls in five places.
++     */
+     private void requestLocationUpdates() {
+         try {
+             client.requestLocationUpdates(LocationManager.GPS_PROVIDER, locationIntervalMs(), currentDistanceFilter, locationCallback);
+@@ -316,6 +328,16 @@ public class BackgroundGeolocationService extends Service {
+             // permissions are not yet granted. Rather than check the permissions, which is fiddly,
+             // we simply ignore the exception.
+         }
++        try {
++            client.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, locationIntervalMs(), currentDistanceFilter, locationCallback);
++        } catch (SecurityException ignore) {
++            // Same reasoning as above. ACCESS_COARSE_LOCATION is declared in this plugin's
++            // own manifest and is implied by the FINE grant the app already holds.
++        } catch (IllegalArgumentException ignore) {
++            // Not defensive decoration: requestLocationUpdates throws this for a provider the
++            // device does not have, and some do not have this one. The GPS registration above
++            // stands, which is the behaviour this patch started from.
++        }
+     }
+ 
+     // Promote the service to the foreground if necessary.
